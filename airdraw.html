@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Air Draw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: monospace; }
+
+  #container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  #video {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    opacity: 0.18;
+  }
+
+  #drawCanvas {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+  }
+
+  #landmarkCanvas {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+  }
+
+  #ui {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    z-index: 10;
+  }
+
+  .btn {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    padding: 8px 20px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 13px;
+    letter-spacing: 1px;
+    transition: background 0.2s;
+  }
+  .btn:hover { background: rgba(255,255,255,0.18); }
+  .btn.active { background: rgba(0,255,200,0.2); border-color: rgba(0,255,200,0.6); color: #0ffc; }
+
+  #status {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.35);
+    font-size: 12px;
+    letter-spacing: 2px;
+    z-index: 10;
+    white-space: nowrap;
+  }
+
+  #colorPicker {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 10;
+  }
+
+  .color-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: transform 0.2s, border-color 0.2s;
+  }
+  .color-dot:hover { transform: scale(1.2); }
+  .color-dot.selected { border-color: #fff; transform: scale(1.2); }
+
+  #sizeWrap {
+    position: absolute;
+    right: 28px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    z-index: 10;
+  }
+  #sizeLabel { color: rgba(255,255,255,0.3); font-size: 10px; letter-spacing: 1px; }
+  #sizeSlider {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 4px;
+    height: 120px;
+    accent-color: #0ff;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="drawCanvas"></canvas>
+  <canvas id="landmarkCanvas"></canvas>
+
+  <div id="ui">
+    <button class="btn active" id="toggleDraw">✦ DRAW: ON</button>
+    <button class="btn" id="clearBtn">✕ CLEAR</button>
+  </div>
+
+  <div id="colorPicker">
+    <div class="color-dot selected" style="background:#ffee00" data-color="#ffee00"></div>
+    <div class="color-dot" style="background:#00ffcc" data-color="#00ffcc"></div>
+    <div class="color-dot" style="background:#ff4488" data-color="#ff4488"></div>
+    <div class="color-dot" style="background:#4488ff" data-color="#4488ff"></div>
+    <div class="color-dot" style="background:#ff8800" data-color="#ff8800"></div>
+    <div class="color-dot" style="background:#ffffff" data-color="#ffffff"></div>
+  </div>
+
+  <div id="sizeWrap">
+    <span id="sizeLabel">SIZE</span>
+    <input type="range" id="sizeSlider" min="2" max="20" value="5">
+  </div>
+
+  <div id="status">LOADING HAND TRACKING...</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+const video = document.getElementById('video');
+const drawCanvas = document.getElementById('drawCanvas');
+const landmarkCanvas = document.getElementById('landmarkCanvas');
+const dCtx = drawCanvas.getContext('2d');
+const lCtx = landmarkCanvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const toggleBtn = document.getElementById('toggleDraw');
+const clearBtn = document.getElementById('clearBtn');
+const sizeSlider = document.getElementById('sizeSlider');
+
+let drawingEnabled = true;
+let currentColor = '#ffee00';
+let brushSize = 5;
+let prevX = null, prevY = null;
+let clearCooldown = false;
+
+function resize() {
+  drawCanvas.width = landmarkCanvas.width = window.innerWidth;
+  drawCanvas.height = landmarkCanvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+document.querySelectorAll('.color-dot').forEach(dot => {
+  dot.addEventListener('click', () => {
+    document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('selected'));
+    dot.classList.add('selected');
+    currentColor = dot.dataset.color;
+  });
+});
+
+sizeSlider.addEventListener('input', () => { brushSize = parseInt(sizeSlider.value); });
+
+toggleBtn.addEventListener('click', () => {
+  drawingEnabled = !drawingEnabled;
+  toggleBtn.textContent = `✦ DRAW: ${drawingEnabled ? 'ON' : 'OFF'}`;
+  toggleBtn.classList.toggle('active', drawingEnabled);
+  if (!drawingEnabled) { prevX = null; prevY = null; }
+});
+
+clearBtn.addEventListener('click', () => {
+  dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+  prevX = null; prevY = null;
+});
+
+function drawGlowLine(x1, y1, x2, y2, color, size) {
+  dCtx.save();
+  dCtx.lineCap = 'round';
+  dCtx.lineJoin = 'round';
+  dCtx.strokeStyle = color;
+
+  dCtx.globalAlpha = 0.15;
+  dCtx.lineWidth = size * 5;
+  dCtx.shadowBlur = 30;
+  dCtx.shadowColor = color;
+  dCtx.beginPath(); dCtx.moveTo(x1,y1); dCtx.lineTo(x2,y2); dCtx.stroke();
+
+  dCtx.globalAlpha = 0.35;
+  dCtx.lineWidth = size * 2.5;
+  dCtx.shadowBlur = 15;
+  dCtx.beginPath(); dCtx.moveTo(x1,y1); dCtx.lineTo(x2,y2); dCtx.stroke();
+
+  dCtx.globalAlpha = 1;
+  dCtx.lineWidth = size;
+  dCtx.shadowBlur = 6;
+  dCtx.beginPath(); dCtx.moveTo(x1,y1); dCtx.lineTo(x2,y2); dCtx.stroke();
+
+  dCtx.restore();
+}
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.6
+});
+
+hands.onResults((results) => {
+  lCtx.clearRect(0, 0, landmarkCanvas.width, landmarkCanvas.height);
+
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    statusEl.textContent = 'SHOW YOUR HAND TO THE CAMERA';
+    prevX = null; prevY = null;
+    return;
+  }
+
+  const landmarks = results.multiHandLandmarks[0];
+  const w = landmarkCanvas.width;
+  const h = landmarkCanvas.height;
+
+  // Draw skeleton (mirrored)
+  lCtx.save();
+  lCtx.translate(w, 0);
+  lCtx.scale(-1, 1);
+
+  const connections = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [0,9],[9,10],[10,11],[11,12],
+    [0,13],[13,14],[14,15],[15,16],
+    [0,17],[17,18],[18,19],[19,20],
+    [5,9],[9,13],[13,17]
+  ];
+
+  lCtx.strokeStyle = '#00e5ff';
+  lCtx.lineWidth = 2;
+  lCtx.shadowBlur = 14;
+  lCtx.shadowColor = '#00e5ff';
+  lCtx.globalAlpha = 0.85;
+  connections.forEach(([a, b]) => {
+    lCtx.beginPath();
+    lCtx.moveTo(landmarks[a].x * w, landmarks[a].y * h);
+    lCtx.lineTo(landmarks[b].x * w, landmarks[b].y * h);
+    lCtx.stroke();
+  });
+
+  landmarks.forEach((lm, i) => {
+    const isTip = i === 8;
+    lCtx.beginPath();
+    lCtx.arc(lm.x * w, lm.y * h, isTip ? 7 : 3.5, 0, Math.PI * 2);
+    lCtx.fillStyle = isTip ? '#ffffff' : '#00e5ff';
+    lCtx.shadowBlur = isTip ? 20 : 10;
+    lCtx.shadowColor = isTip ? '#fff' : '#00e5ff';
+    lCtx.globalAlpha = 1;
+    lCtx.fill();
+  });
+
+  lCtx.restore();
+
+  // Gesture detection
+  const indexUp  = landmarks[8].y  < landmarks[6].y;
+  const middleUp = landmarks[12].y < landmarks[10].y;
+  const ringUp   = landmarks[16].y < landmarks[14].y;
+  const pinkyUp  = landmarks[20].y < landmarks[18].y;
+  const allFive = indexUp && middleUp && ringUp && pinkyUp;
+
+  // Clear on open hand (with cooldown so it doesn't spam)
+  if (allFive && !clearCooldown) {
+    dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+    prevX = null; prevY = null;
+    clearCooldown = true;
+    setTimeout(() => { clearCooldown = false; }, 1000);
+  }
+
+  const shouldDraw = drawingEnabled && indexUp && !middleUp && !allFive;
+
+  const tipX = (1 - landmarks[8].x) * w;
+  const tipY = landmarks[8].y * h;
+
+  if (shouldDraw) {
+    if (prevX !== null) {
+      drawGlowLine(prevX, prevY, tipX, tipY, currentColor, brushSize);
+    }
+    prevX = tipX; prevY = tipY;
+    statusEl.textContent = '✦ DRAWING';
+  } else {
+    prevX = null; prevY = null;
+    statusEl.textContent = allFive
+      ? '🖐 CLEARED!'
+      : indexUp && middleUp
+        ? 'FOLD MIDDLE FINGER TO DRAW'
+        : '✦ POINT WITH INDEX FINGER TO DRAW';
+  }
+});
+
+const camera = new Camera(video, {
+  onFrame: async () => { await hands.send({ image: video }); },
+  width: 1280,
+  height: 720
+});
+
+camera.start()
+  .then(() => { statusEl.textContent = 'SHOW YOUR HAND TO THE CAMERA'; })
+  .catch(() => { statusEl.textContent = '⚠ ALLOW CAMERA ACCESS & REFRESH'; });
+</script>
+</body>
+</html>
